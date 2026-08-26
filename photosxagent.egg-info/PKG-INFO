@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: photosxagent
+Version: 0.1.0
+Summary: Multi-agent photo management: EXIF/vision tags, journey simulation, recommendations, and a chat assistant
+Requires-Python: >=3.10
+Requires-Dist: fastapi>=0.104.0
+Requires-Dist: uvicorn[standard]>=0.24.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: pydantic-settings>=2.0.0
+Requires-Dist: python-multipart>=0.0.6
+Requires-Dist: motor>=3.3.0
+Requires-Dist: pymongo>=4.0.0
+Requires-Dist: redis>=5.0.0
+Requires-Dist: PyJWT>=2.0.0
+Requires-Dist: bcrypt>=4.0.0
+Requires-Dist: httpx>=0.24.0
+Requires-Dist: aiofiles>=0.8.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: Pillow>=10.0.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: langchain-openai>=0.3.0
+Requires-Dist: langgraph>=0.4.8
+Requires-Dist: openai<2.0.0,>=1.0.0

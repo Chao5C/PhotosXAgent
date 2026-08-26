@@ -1,0 +1,19 @@
+services:
+  mongodb:
+    image: mongo:4.4
+    container_name: photosx-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - photosx_mongo:/data/db
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: photosx-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  photosx_mongo:
