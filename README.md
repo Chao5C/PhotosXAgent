@@ -1,6 +1,6 @@
 # PhotosXAgent
 
-基于多 Agent 的图片管理与智能相册系统。沿用 TradingAgents-CN 的前后端技术栈（Vue 3 + FastAPI + LangGraph + MongoDB + Redis），将股票分析工作流替换为影像理解、推荐与对话助手。
+基于多 Agent 的图片管理与智能相册系统。技术栈:Vue 3 + FastAPI + LangGraph + MongoDB + Redis
 
 ## 三个 Agent
 
