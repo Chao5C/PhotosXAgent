@@ -103,6 +103,24 @@ async def test_provider(name: str, _user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/providers/ollama/local-models")
+async def list_ollama_local(_user=Depends(get_current_user)):
+    try:
+        return ok(await _svc().list_ollama_local())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/providers/ollama/sync")
+async def sync_ollama(_user=Depends(get_current_user)):
+    try:
+        result = await _svc().sync_ollama_models()
+        await refresh_runtime()
+        return ok(result, f"已同步 {result['count']} 个本机 Ollama 模型")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/catalogs")
 async def list_catalogs(_user=Depends(get_current_user)):
     return ok(await _svc().list_catalogs())

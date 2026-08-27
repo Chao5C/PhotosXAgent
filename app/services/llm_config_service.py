@@ -30,6 +30,18 @@ CODING_MODELS = {
 }
 
 
+def ollama_native_base(openai_compat_url: str = "") -> str:
+    url = (openai_compat_url or "http://localhost:11434/v1").rstrip("/")
+    if url.endswith("/v1"):
+        url = url[:-3]
+    return url.rstrip("/") or "http://localhost:11434"
+
+
+def ollama_is_vision(model_name: str) -> bool:
+    name = (model_name or "").lower()
+    return any(hint in name for hint in ("vl", "llava", "vision", "minicpm-v", "bakllava", "moondream"))
+
+
 def resolve_volcengine_base(provider: str, model: str, current_base: str = "") -> str:
     name = (model or "").strip().lower()
     provider = (provider or "").lower()
@@ -282,9 +294,9 @@ class LLMConfigService:
             {
                 "$set": {
                     "default_base_url": ollama_base,
-                    "test_model": ollama_model,
                     "updated_at": now,
-                }
+                },
+                "$setOnInsert": {"test_model": ollama_model},
             },
         )
         await self.models.update_one(
@@ -442,6 +454,90 @@ class LLMConfigService:
             raise ValueError("未配置 API Key")
         return await self._ping_chat(base_url, api_key, model_name, provider)
 
+    async def _ollama_host(self) -> str:
+        provider = await self.providers.find_one({"name": "ollama"}) or {}
+        return ollama_native_base(
+            settings.OLLAMA_BASE_URL or provider.get("default_base_url") or "http://localhost:11434/v1"
+        )
+
+    async def list_ollama_local(self) -> list[dict]:
+        host = await self._ollama_host()
+        try:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                resp = await client.get(f"{host}/api/tags")
+        except httpx.ConnectError as exc:
+            raise ValueError(
+                f"无法连接 Ollama（{host}）。请先在本机启动 Ollama，并确认 OLLAMA_BASE_URL 指向 http://localhost:11434/v1。"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ValueError(f"读取 Ollama 模型列表失败: {exc}") from exc
+        if resp.status_code >= 400:
+            raise ValueError(f"读取 Ollama 模型列表失败 ({resp.status_code}): {resp.text[:200]}")
+        items = []
+        for raw in (resp.json() or {}).get("models") or []:
+            name = (raw.get("name") or raw.get("model") or "").strip()
+            if not name:
+                continue
+            caps = raw.get("capabilities") or []
+            embedding_only = bool(caps) and "completion" not in caps and "embedding" in caps
+            items.append(
+                {
+                    "name": name,
+                    "display_name": name,
+                    "size": raw.get("size"),
+                    "modified_at": raw.get("modified_at"),
+                    "vision": ollama_is_vision(name),
+                    "embedding_only": embedding_only,
+                }
+            )
+        return items
+
+    async def sync_ollama_models(self) -> dict:
+        local = await self.list_ollama_local()
+        chat_models = [item for item in local if not item.get("embedding_only")]
+        if not chat_models:
+            raise ValueError("Ollama 已连接，但没有可用于对话的模型。请先执行例如：ollama pull qwen3:4b")
+        host = await self._ollama_host()
+        openai_base = f"{host}/v1"
+        now = utcnow()
+        await self.upsert_catalog(
+            {
+                "provider": "ollama",
+                "provider_name": "Ollama（本地模型）",
+                "models": [{"name": item["name"], "display_name": item["display_name"]} for item in chat_models],
+            }
+        )
+        created = 0
+        for item in chat_models:
+            vision = bool(item.get("vision"))
+            existing = await self.models.find_one({"provider": "ollama", "model_name": item["name"]})
+            if not existing:
+                created += 1
+            await self.upsert_model(
+                {
+                    "provider": "ollama",
+                    "model_name": item["name"],
+                    "model_display_name": f"{item['name']}（本地 Ollama）",
+                    "api_base": openai_base,
+                    "max_tokens": 8000,
+                    "temperature": 0.3,
+                    "timeout": 180,
+                    "enabled": True,
+                    "capability_level": 3,
+                    "suitable_roles": ["vision"] if vision else ["assistant"],
+                    "features": ["vision"] if vision else ["chat"],
+                    "recommended_depths": ["快速", "标准"],
+                }
+            )
+        names = {item["name"] for item in chat_models}
+        provider = await self.providers.find_one({"name": "ollama"}) or {}
+        test_model = (provider.get("test_model") or "").strip()
+        update = {"default_base_url": openai_base, "is_active": True, "updated_at": now}
+        if test_model not in names:
+            update["test_model"] = chat_models[0]["name"]
+        await self.providers.update_one({"name": "ollama"}, {"$set": update})
+        return {"count": len(chat_models), "created": created, "models": [item["name"] for item in chat_models]}
+
     async def _ping_chat(self, base_url: str, api_key: str, model: str, provider: str = "") -> dict:
         bases = []
         primary = resolve_volcengine_base(provider, model, base_url).rstrip("/")
@@ -451,6 +547,8 @@ class LLMConfigService:
             if alt not in bases:
                 bases.append(alt)
 
+        is_local = provider == "ollama" or any(host in (base_url or "") for host in ("localhost", "127.0.0.1"))
+        timeout = 120.0 if is_local else 40.0
         last_error = "测试失败"
         for candidate in bases:
             url = f"{candidate}/chat/completions"
@@ -462,14 +560,28 @@ class LLMConfigService:
             }
             if "volces.com" in candidate:
                 payload["thinking"] = {"type": "disabled"}
-            async with httpx.AsyncClient(timeout=40.0) as client:
-                resp = await client.post(url, headers=headers, json=payload)
+            try:
+                async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+            except httpx.ConnectError as exc:
+                hint = "请确认本机已启动 Ollama（ollama serve），并用 ollama list 查看已拉取模型。" if is_local else ""
+                raise ValueError(f"无法连接 {candidate}。{hint}".strip()) from exc
+            except httpx.TimeoutException as exc:
+                raise ValueError(
+                    f"请求超时（{int(timeout)}s）。本地模型首次加载较慢，可稍后再试或换更小的模型。"
+                ) from exc
             if resp.status_code < 400:
                 data = resp.json()
                 message = ((data.get("choices") or [{}])[0].get("message") or {})
                 content = message.get("content") or message.get("reasoning_content") or ""
                 return {"ok": True, "model": model, "base_url": candidate, "reply": str(content)[:200]}
             last_error = f"测试失败 ({resp.status_code}): {resp.text[:300]}"
+            if is_local and resp.status_code in (400, 404):
+                try:
+                    installed = ", ".join(item["name"] for item in await self.list_ollama_local()) or "（无）"
+                    last_error += f"。本机已安装: {installed}。模型名必须与 ollama list 完全一致（含 tag，例如 qwen3:4b）。"
+                except ValueError:
+                    pass
             if "InvalidEndpointOrModel" not in resp.text and resp.status_code != 404:
                 break
         raise ValueError(last_error)
