@@ -36,6 +36,27 @@ npm run dev
 配置 `.env` 中的视觉模型 API Key 后，Agent1 才能识别画面内容；未配置时仍会提取 EXIF 并生成基础相册/行程。
 
 ## 更新日志
+# 8.28
+分析 / 推送
+
+POST /api/analysis/analyze：只分析、建索引、入库
+
+POST /api/analysis/push：生成攻略并投递
+
+自动触发需同时满足：距常用地 >50km、新地点附近至少 3 张且在 2 小时内、与上一张旧地点间隔 <6 小时、EXIF 设备一致；若这 3 张跨度 >7 天则不触发
+
+ChatAgent
+
+意图：QUERY 短 chunk 向量检索 → QUESTION 按图片 ID 加载长 chunk → COMMAND 改记忆/定时提醒 → REQUEST_PUSH 直接调推送接口
+
+人物美丑类问题会拒绝评价；地点/天气走工具
+
+会话：ACTIVE（5 分钟内）缓存不推；IDLE / DORMANT 立即推，离开较久会合并
+
+到瓶颈期了，对于多Agent相互之间的调用逻辑还需要继续细化
+
+要先确保可用性，再谈性能与效率
+
 # 8.27
 新增Ollama模型的一键识别读取
 
