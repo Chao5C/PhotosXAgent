@@ -46,7 +46,8 @@ async def refresh_runtime() -> None:
         api_key = (doc.get("api_key") or "").strip() or env_api_key(name)
         if name == "volcengine_coding" and not api_key:
             sibling = await db.llm_providers.find_one({"name": "volcengine"})
-            api_key = ((sibling or {}).get("api_key") or "").strip() or env_api_key("volcengine")
+            if sibling and sibling.get("is_active"):
+                api_key = ((sibling or {}).get("api_key") or "").strip() or env_api_key("volcengine")
         if name == "ollama":
             api_key = api_key or "ollama"
         base_url = (doc.get("default_base_url") or "").rstrip("/")
@@ -147,6 +148,8 @@ def create_chat_model(
         elif provider:
             provider_name = provider
     cached = (_runtime.get("providers") or {}).get(provider_name) or {}
+    if cached and not cached.get("is_active"):
+        raise RuntimeError(f"厂家 {provider_name} 已禁用，请在「设置 → 厂家管理」启用或更换 Agent 模型")
     default_url, _ = PROVIDER_CONFIG.get(provider_name, PROVIDER_CONFIG["openai"])
     base_url = cached.get("base_url") or base_url or settings.CUSTOM_OPENAI_BASE_URL or default_url
     from app.services.llm_config_service import resolve_volcengine_base

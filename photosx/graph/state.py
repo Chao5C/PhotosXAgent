@@ -22,3 +22,15 @@ class ChatAgentState(TypedDict, total=False):
     citations: List[Any]
     provider: str
     model_name: str
+    photo_ids: List[str]
+    top_k: int
+    intent: str
+    photos: List[dict]
+    albums: List[dict]
+    total: int
+    has_more: bool
+    query_id: str
+    kind: str
+    reminder: dict
+    poster: dict
+    guide: dict
