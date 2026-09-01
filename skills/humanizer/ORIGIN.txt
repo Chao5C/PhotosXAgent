@@ -1,0 +1,2 @@
+﻿source=https://github.com/blader/humanizer
+do_not_rewrite=true

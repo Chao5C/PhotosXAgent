@@ -1,0 +1,3 @@
+source=https://github.com/Agents365-ai/video-podcast-maker
+path=skills/video-podcast-maker
+do_not_rewrite=true
