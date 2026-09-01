@@ -1,0 +1,3 @@
+source=https://github.com/lewislulu/html-ppt-skill
+path=/
+do_not_rewrite=true
