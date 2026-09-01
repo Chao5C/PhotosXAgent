@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photosxagent"
-version = "0.1.0"
+version = "0.3.0"
 description = "Multi-agent photo management: EXIF/vision tags, journey simulation, recommendations, and a chat assistant"
 requires-python = ">=3.10"
 dependencies = [
@@ -26,6 +26,8 @@ dependencies = [
     "langchain-openai>=0.3.0",
     "langgraph>=0.4.8",
     "openai>=1.0.0,<2.0.0",
+    "PyYAML>=6.0.0",
+    "mcp>=1.6.0",
 ]
 
 [tool.setuptools.packages.find]
