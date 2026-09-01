@@ -42,17 +42,29 @@ def ollama_is_vision(model_name: str) -> bool:
     return any(hint in name for hint in ("vl", "llava", "vision", "minicpm-v", "bakllava", "moondream"))
 
 
+def ensure_openai_v1_base(base_url: str) -> str:
+    """Normalize OpenAI-compatible base URLs for /chat/completions calls."""
+    url = (base_url or "").rstrip("/")
+    if not url:
+        return url
+    if url.endswith("/v1"):
+        return url
+    # DeepSeek / DashScope compatible endpoints need /v1; Volcengine already includes path.
+    if "volces.com" in url or "openai.com" in url:
+        return url
+    return f"{url}/v1"
+
+
 def resolve_volcengine_base(provider: str, model: str, current_base: str = "") -> str:
+    """Pick API base URL. Only Volcengine providers may use Volcengine endpoints."""
     name = (model or "").strip().lower()
     provider = (provider or "").lower()
     current = (current_base or "").rstrip("/")
+    if not provider.startswith("volcengine"):
+        return ensure_openai_v1_base(current)
     if provider == "volcengine_coding" or name in CODING_MODELS:
-        return VOLCENGINE_CODING_BASE
-    if current:
-        return current
-    if provider.startswith("volcengine"):
-        return VOLCENGINE_BASE
-    return current
+        return current or VOLCENGINE_CODING_BASE
+    return current or VOLCENGINE_BASE
 
 DEFAULT_PROVIDERS = [
     {
@@ -361,7 +373,14 @@ class LLMConfigService:
         return self._public_provider(doc or {})
 
     async def toggle_provider(self, name: str, is_active: bool) -> dict:
-        await self.providers.update_one({"name": name}, {"$set": {"is_active": is_active, "updated_at": utcnow()}})
+        now = utcnow()
+        await self.providers.update_one({"name": name}, {"$set": {"is_active": is_active, "updated_at": now}})
+        # 火山方舟与火山方舟编程共用密钥/入口，禁用主入口时一并禁用编程版，避免仍走 Volcengine。
+        if name == "volcengine" and not is_active:
+            await self.providers.update_one(
+                {"name": "volcengine_coding"},
+                {"$set": {"is_active": False, "updated_at": now}},
+            )
         doc = await self.providers.find_one({"name": name})
         if not doc:
             raise ValueError("厂家不存在")
@@ -378,18 +397,25 @@ class LLMConfigService:
         if not api_key and provider_name.startswith("volcengine"):
             sibling_name = "volcengine" if provider_name == "volcengine_coding" else "volcengine_coding"
             sibling = await self.providers.find_one({"name": sibling_name}) or {}
-            api_key = (sibling.get("api_key") or "").strip() or env_api_key(sibling_name)
+            if sibling.get("is_active"):
+                api_key = (sibling.get("api_key") or "").strip() or env_api_key(sibling_name)
         if provider_name == "ollama":
             api_key = api_key or "ollama"
             base_url = (settings.OLLAMA_BASE_URL or provider.get("default_base_url") or "http://localhost:11434/v1").rstrip("/")
             return api_key, base_url
-        base_url = resolve_volcengine_base(provider_name, model, provider.get("default_base_url") or "")
+        model_doc = {}
+        if model:
+            model_doc = await self.models.find_one({"provider": provider_name, "model_name": model}) or {}
+        raw_base = (model_doc.get("api_base") or provider.get("default_base_url") or "").strip()
+        base_url = resolve_volcengine_base(provider_name, model, raw_base)
         return api_key, base_url
 
     async def test_provider(self, name: str) -> dict:
         provider = await self.providers.find_one({"name": name})
         if not provider:
             raise ValueError("厂家不存在")
+        if not provider.get("is_active", True):
+            raise ValueError("该厂家已禁用，请先启用后再测试")
         model = provider.get("test_model") or "gpt-4o-mini"
         api_key, base_url = await self.resolve_api(name, model)
         if not api_key:
@@ -446,10 +472,12 @@ class LLMConfigService:
         await self.models.delete_one({"provider": provider, "model_name": model_name})
 
     async def test_model(self, provider: str, model_name: str) -> dict:
+        provider_doc = await self.providers.find_one({"name": provider}) or {}
+        if not provider_doc:
+            raise ValueError("厂家不存在")
+        if not provider_doc.get("is_active", True):
+            raise ValueError("该厂家已禁用，请先启用后再测试")
         api_key, base_url = await self.resolve_api(provider, model_name)
-        model = await self.models.find_one({"provider": provider, "model_name": model_name}) or {}
-        if model.get("api_base"):
-            base_url = resolve_volcengine_base(provider, model_name, str(model["api_base"]))
         if not api_key:
             raise ValueError("未配置 API Key")
         return await self._ping_chat(base_url, api_key, model_name, provider)
@@ -542,7 +570,7 @@ class LLMConfigService:
         bases = []
         primary = resolve_volcengine_base(provider, model, base_url).rstrip("/")
         bases.append(primary)
-        if "volces.com" in primary:
+        if (provider or "").startswith("volcengine") and "volces.com" in primary:
             alt = VOLCENGINE_BASE if "/coding/" in primary else VOLCENGINE_CODING_BASE
             if alt not in bases:
                 bases.append(alt)

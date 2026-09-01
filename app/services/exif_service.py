@@ -6,8 +6,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageFile
 from PIL.ExifTags import GPSTAGS
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,16 @@ def extract_exif(file_path: Path) -> dict:
             camera_model = tagged.get("Model")
             if camera_make or camera_model:
                 result["camera"] = " ".join(str(part).strip() for part in [camera_make, camera_model] if part)
+            serial = (
+                tagged.get("BodySerialNumber")
+                or tagged.get("SerialNumber")
+                or tagged.get("CameraSerialNumber")
+                or tagged.get("InternalSerialNumber")
+            )
+            if serial:
+                result["device_id"] = str(serial).strip()
+            elif result.get("camera"):
+                result["device_id"] = result["camera"]
 
             dt = tagged.get("DateTimeOriginal") or tagged.get("DateTime")
             if dt:
@@ -84,18 +96,43 @@ def extract_exif(file_path: Path) -> dict:
     return result
 
 
-def make_thumbnail(file_path: Path, dest: Path, size: int = 480) -> None:
+def _open_rgb_image(file_path: Path | str, max_side: int | None = None) -> Image.Image:
+    path = Path(file_path)
+    last_error: Exception | None = None
+    candidates = [path]
+    thumb = path.parent / f"{path.stem}_thumb.jpg"
+    if thumb.exists() and thumb.resolve() != path.resolve():
+        candidates.append(thumb)
+
+    for candidate in candidates:
+        try:
+            with Image.open(candidate) as image:
+                image.load()
+                rgb = image.convert("RGB")
+                if max_side:
+                    rgb.thumbnail((max_side, max_side))
+                return rgb.copy()
+        except Exception as exc:
+            last_error = exc
+            logger.warning("open image failed for %s: %s", candidate, exc)
+    raise RuntimeError(f"无法读取图片: {last_error}") from last_error
+
+
+def make_thumbnail(file_path: Path | str, dest: Path | str, size: int = 480) -> None:
+    dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with Image.open(file_path) as image:
-        image = image.convert("RGB")
-        image.thumbnail((size, size))
+    image = _open_rgb_image(file_path, max_side=size)
+    try:
         image.save(dest, "JPEG", quality=82)
+    finally:
+        image.close()
 
 
-def image_to_jpeg_bytes(file_path: Path, max_side: int = 1280) -> bytes:
-    with Image.open(file_path) as image:
-        image = image.convert("RGB")
-        image.thumbnail((max_side, max_side))
+def image_to_jpeg_bytes(file_path: Path | str, max_side: int = 1280) -> bytes:
+    image = _open_rgb_image(file_path, max_side=max_side)
+    try:
         buffer = BytesIO()
         image.save(buffer, "JPEG", quality=80)
         return buffer.getvalue()
+    finally:
+        image.close()

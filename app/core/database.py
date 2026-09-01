@@ -26,6 +26,12 @@ async def init_db() -> None:
     await mongo_db.albums.create_index([("user_id", 1), ("kind", 1)])
     await mongo_db.recommendations.create_index([("user_id", 1), ("created_at", -1)])
     await mongo_db.chat_messages.create_index([("user_id", 1), ("created_at", 1)])
+    await mongo_db.photo_chunks.create_index([("user_id", 1), ("kind", 1), ("photo_id", 1)], unique=True)
+    await mongo_db.analyses.create_index([("user_id", 1), ("created_at", -1)])
+    await mongo_db.push_queue.create_index([("user_id", 1), ("status", 1), ("created_at", 1)])
+    await mongo_db.user_sessions.create_index("user_id", unique=True)
+    await mongo_db.user_memory.create_index("user_id", unique=True)
+    await mongo_db.chat_searches.create_index([("user_id", 1), ("created_at", -1)])
 
     try:
         redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2)

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 from pathlib import Path
 
@@ -9,8 +10,9 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.database import close_db, get_db, init_db
 from app.core.response import fail
-from app.routers import albums, auth, chat, config, health, journey, llm, photos, recommendations
+from app.routers import albums, analysis, auth, chat, config, health, journey, llm, mcp, photos, posters, recommendations, studio
 from app.services.llm_config_service import LLMConfigService
+from app.services.push_worker import run_push_worker
 from app.services.user_service import UserService
 from photosx.llm.client import refresh_runtime
 
@@ -32,7 +34,13 @@ async def lifespan(_app: FastAPI):
     await UserService(get_db()).ensure_default_admin()
     await LLMConfigService(get_db()).ensure_defaults()
     await refresh_runtime()
+    worker = asyncio.create_task(run_push_worker())
     yield
+    worker.cancel()
+    try:
+        await worker
+    except asyncio.CancelledError:
+        pass
     await close_db()
     logger.info("PhotosXAgent stopped")
 
@@ -59,12 +67,16 @@ async def unhandled(request: Request, exc: Exception):
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(photos.router)
+app.include_router(posters.router)
 app.include_router(albums.router)
 app.include_router(journey.router)
 app.include_router(recommendations.router)
 app.include_router(chat.router)
+app.include_router(analysis.router)
+app.include_router(studio.router)
 app.include_router(config.router)
 app.include_router(llm.router)
+app.include_router(mcp.router)
 
 
 if __name__ == "__main__":

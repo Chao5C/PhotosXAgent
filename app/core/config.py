@@ -54,11 +54,15 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = Field(default="llama3.1")
     CUSTOM_OPENAI_API_KEY: str = Field(default="")
     CUSTOM_OPENAI_BASE_URL: str = Field(default="")
+    AMAP_WEB_KEY: str = Field(default="", description="高德 Web 服务 Key，用于国内逆地理编码")
 
     DISTANCE_THRESHOLD_KM: float = Field(default=50.0)
     UPLOAD_DIR: str = Field(default="data/uploads")
+    TOPICS_DIR: str = Field(default="data/topics")
     MAX_UPLOAD_SIZE: int = Field(default=30 * 1024 * 1024)
     TIMEZONE: str = Field(default="Asia/Shanghai")
+    STUDIO_VOICE_ID: str = Field(default="default")
+    STUDIO_TTS_ENABLED: bool = Field(default=False)
 
     @property
     def MONGO_URI(self) -> str:
@@ -79,6 +83,14 @@ class Settings(BaseSettings):
     @property
     def upload_path(self) -> Path:
         path = Path(self.UPLOAD_DIR)
+        if not path.is_absolute():
+            path = ROOT_DIR / path
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def topics_path(self) -> Path:
+        path = Path(self.TOPICS_DIR)
         if not path.is_absolute():
             path = ROOT_DIR / path
         path.mkdir(parents=True, exist_ok=True)

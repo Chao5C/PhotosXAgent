@@ -1,7 +1,6 @@
-from datetime import datetime
-
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.services.geo_service import resolve_photo_place
 from app.utils.serialize import serialize
 
 
@@ -31,7 +30,7 @@ class JourneyService:
                     "taken_at": taken,
                     "lat": meta.get("lat"),
                     "lng": meta.get("lng"),
-                    "place": geo.get("place_name") or geo.get("city"),
+                    "place": resolve_photo_place(geo, meta),
                     "city": geo.get("city"),
                     "caption": (item.get("vision") or {}).get("caption"),
                     "tags": (item.get("vision") or {}).get("tags") or [],

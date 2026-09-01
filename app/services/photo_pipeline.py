@@ -3,14 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.core.config import settings
-from app.services.geo_service import fetch_weather, haversine_km, reverse_geocode
-from app.utils.serialize import serialize, utcnow
-from photosx.agents.recommend_agent import run_recommend_agent
-from photosx.agents.vision_agent import run_vision_agent
+from app.services.geo_service import enrich_geo, fetch_weather, geocode_photo_from_metadata, haversine_km, resolve_photo_place, reverse_geocode
+from app.utils.serialize import is_valid_object_id, parse_object_id, serialize, utcnow
+from photosx.agents.vision_agent import AI_CAPTION_FALLBACK, run_vision_agent
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +27,7 @@ class PhotoPipeline:
 
     async def process_photo(self, user_id: str, photo_id: str, file_path: str) -> dict:
         await self.db.photos.update_one(
-            {"_id": ObjectId(photo_id)},
+            {"_id": parse_object_id(photo_id, field="photo_id")},
             {"$set": {"status": "analyzing", "updated_at": utcnow()}},
         )
 
@@ -51,39 +48,55 @@ class PhotoPipeline:
                 geo["home_lat"], geo["home_lng"] = home
             geo["weather"] = await fetch_weather(float(lat), float(lng))
 
+        geo = enrich_geo(metadata, geo)
+
         now = utcnow()
+        vision_ok = (vision.get("source") or "") != "fallback" and bool((vision.get("caption") or "").strip()) and (
+            vision.get("caption") or ""
+        ) != AI_CAPTION_FALLBACK
+        status = "ready" if vision_ok else "failed"
+        parse_error = None if vision_ok else (vision.get("error") or AI_CAPTION_FALLBACK)
         await self.db.photos.update_one(
-            {"_id": ObjectId(photo_id)},
+            {"_id": parse_object_id(photo_id, field="photo_id")},
             {
                 "$set": {
                     "metadata": metadata,
                     "vision": vision,
                     "geo": geo,
-                    "status": "ready",
-                    "analyzed_at": now,
+                    "status": status,
+                    "parse_error": parse_error,
+                    "analyzed_at": now if vision_ok else None,
                     "updated_at": now,
                 }
             },
         )
 
+        if not vision_ok:
+            return {
+                "photo_id": photo_id,
+                "metadata": metadata,
+                "vision": vision,
+                "geo": geo,
+                "albums": [],
+                "analysis": None,
+                "failed": True,
+            }
+
         albums = await self._assign_albums(user_id, photo_id, vision, geo, metadata)
-        recommendation = None
-        distance = (geo or {}).get("distance_from_home_km")
-        if distance is not None and distance >= settings.DISTANCE_THRESHOLD_KM:
-            rec_state = await run_recommend_agent(
-                {**state, "geo": geo, "vision": vision}
-            )
-            recommendation = rec_state.get("recommendation")
-            if recommendation:
-                rec_doc = {
-                    "user_id": user_id,
-                    "photo_id": photo_id,
-                    **recommendation,
-                    "read": False,
-                    "created_at": now,
-                }
-                inserted = await self.db.recommendations.insert_one(rec_doc)
-                recommendation["id"] = str(inserted.inserted_id)
+        photo_doc = await self.db.photos.find_one({"_id": parse_object_id(photo_id, field="photo_id")})
+        from app.services.analysis_service import AnalysisService
+        from app.services.rag_service import RagService
+
+        compact = serialize(photo_doc) or {}
+        await RagService(self.db).index_photo(user_id, compact)
+        analysis_svc = AnalysisService(self.db)
+        analysis = None
+        try:
+            analysis = await analysis_svc.analyze(user_id, [photo_id], request_text="pipeline")
+            if (analysis or {}).get("status") == "triggered":
+                await analysis_svc.push(user_id, analysis_id=analysis.get("id"), force=False)
+        except Exception as exc:
+            logger.warning("post-parse analysis push skipped for %s: %s", photo_id, exc)
 
         return {
             "photo_id": photo_id,
@@ -91,17 +104,19 @@ class PhotoPipeline:
             "vision": vision,
             "geo": geo,
             "albums": albums,
-            "recommendation": recommendation,
+            "analysis": analysis,
         }
 
     async def _home_centroid(self, user_id: str, exclude_id: str) -> Optional[tuple[float, float]]:
+        filters: dict = {
+            "user_id": user_id,
+            "metadata.lat": {"$ne": None},
+            "metadata.lng": {"$ne": None},
+        }
+        if is_valid_object_id(exclude_id):
+            filters["_id"] = {"$ne": parse_object_id(exclude_id, field="photo_id")}
         cursor = self.db.photos.find(
-            {
-                "user_id": user_id,
-                "_id": {"$ne": ObjectId(exclude_id)},
-                "metadata.lat": {"$ne": None},
-                "metadata.lng": {"$ne": None},
-            },
+            filters,
             {"metadata.lat": 1, "metadata.lng": 1},
         )
         lats, lngs = [], []
@@ -131,7 +146,7 @@ class PhotoPipeline:
             await self._add_to_album(user_id, "合照", "group", photo_id)
             names.append("合照")
 
-        place = (geo or {}).get("city") or (geo or {}).get("place_name")
+        place = resolve_photo_place(geo, metadata)
         if place:
             title = f"{place}合集"
             await self._add_to_album(user_id, title, "location", photo_id, location=place)
